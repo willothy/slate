@@ -1,0 +1,18 @@
+[package]
+name = "tmpkey"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "tmpkey"
+path = "src/lib.rs"
+bench = false
+
+[[bench]]
+name = "main"
+harness = false
+
+[dev-dependencies]
+bencher = "0.1.5"
+slotmap = "1.0.6"
+
