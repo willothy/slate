@@ -6,6 +6,34 @@ pub struct KeyData<'a, T> {
     __phantom: std::marker::PhantomData<&'a T>,
 }
 
+#[macro_export]
+macro_rules! key {
+    ($v:vis $name:ident) => {
+        #[derive(Clone, Copy, Debug)]
+        $v struct $name<'a, T> {
+            data: KeyData<'a, T>,
+        }
+
+        impl<'a, T> Key<T> for $name<'a, T> {
+            fn data(&self) -> KeyData<'a, T> {
+                self.data
+            }
+
+            fn init(version: NonZeroU32, index: u32) -> Self {
+                Self {
+                    data: KeyData {
+                        index,
+                        version,
+                        __phantom: std::marker::PhantomData,
+                    },
+                }
+            }
+        }
+    };
+}
+
+key!(pub DefaultKey);
+
 impl<'a, T> PartialEq for KeyData<'a, T> {
     fn eq(&self, other: &Self) -> bool {
         self.index == other.index && self.version == other.version
@@ -126,27 +154,6 @@ pub trait Key<T> {
 
     fn version(&self) -> NonZeroU32 {
         self.data().version
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct DefaultKey<'a, T> {
-    data: KeyData<'a, T>,
-}
-
-impl<'a, T> Key<T> for DefaultKey<'a, T> {
-    fn data(&self) -> KeyData<'a, T> {
-        self.data
-    }
-
-    fn init(version: NonZeroU32, index: u32) -> Self {
-        Self {
-            data: KeyData {
-                index,
-                version,
-                __phantom: std::marker::PhantomData,
-            },
-        }
     }
 }
 
