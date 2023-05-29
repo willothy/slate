@@ -1,22 +1,22 @@
-use std::{fmt::Debug, iter::FilterMap, num::NonZeroU32, ops::Not};
+use std::{any::Any, fmt::Debug, iter::FilterMap, num::NonZeroU32, ops::Not};
 
-pub struct KeyData<'a, T> {
+pub struct KeyData<T> {
     index: u32,
     version: NonZeroU32,
-    __phantom: std::marker::PhantomData<&'a T>,
+    __phantom: core::marker::PhantomData<T>,
 }
 
 #[macro_export]
 macro_rules! key {
     ($v:vis $name:ident) => {
         #[derive(Clone, Copy, Debug)]
-        $v struct $name<'a, T> {
-            data: KeyData<'a, T>,
+        $v struct $name<T> {
+            data: KeyData<T>,
         }
 
-        impl<'a, T> Key<T> for $name<'a, T> {
-            fn data(&self) -> KeyData<'a, T> {
-                self.data
+        impl<T> Key<T> for $name<T> {
+            fn data(&self) -> &KeyData<T> {
+                &self.data
             }
 
             fn init(version: NonZeroU32, index: u32) -> Self {
@@ -24,7 +24,7 @@ macro_rules! key {
                     data: KeyData {
                         index,
                         version,
-                        __phantom: std::marker::PhantomData,
+						__phantom: core::marker::PhantomData,
                     },
                 }
             }
@@ -34,15 +34,15 @@ macro_rules! key {
 
 key!(pub DefaultKey);
 
-impl<'a, T> PartialEq for KeyData<'a, T> {
+impl<T> PartialEq for KeyData<T> {
     fn eq(&self, other: &Self) -> bool {
         self.index == other.index && self.version == other.version
     }
 }
 
-impl<'a, T> Eq for KeyData<'a, T> {}
+impl<T> Eq for KeyData<T> {}
 
-impl<'a, T> PartialOrd for KeyData<'a, T> {
+impl<T> PartialOrd for KeyData<T> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         match self.index.partial_cmp(&other.index) {
             Some(core::cmp::Ordering::Equal) => {}
@@ -52,7 +52,7 @@ impl<'a, T> PartialOrd for KeyData<'a, T> {
     }
 }
 
-impl<'a, T> Ord for KeyData<'a, T> {
+impl<T> Ord for KeyData<T> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         match self.index.cmp(&other.index) {
             core::cmp::Ordering::Equal => {}
@@ -62,19 +62,19 @@ impl<'a, T> Ord for KeyData<'a, T> {
     }
 }
 
-impl<'a, T> Clone for KeyData<'a, T> {
+impl<T> Clone for KeyData<T> {
     fn clone(&self) -> Self {
         Self {
             index: self.index,
             version: self.version,
-            __phantom: self.__phantom,
+            __phantom: core::marker::PhantomData,
         }
     }
 }
 
-impl<'a, T> Copy for KeyData<'a, T> {}
+impl<T> Copy for KeyData<T> {}
 
-impl<'a, T> Debug for KeyData<'a, T> {
+impl<T> Debug for KeyData<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -109,16 +109,16 @@ impl<T> Slot<T> {
         self.version.get() % 2 != 0
     }
 
-    pub fn older_than(&self, version: NonZeroU32) -> bool {
-        self.version < version
+    pub fn older_than(&self, version: &NonZeroU32) -> bool {
+        self.version.lt(version)
     }
 
-    pub fn newer_than(&self, version: NonZeroU32) -> bool {
-        self.version > version
+    pub fn newer_than(&self, version: &NonZeroU32) -> bool {
+        self.version.gt(version)
     }
 
-    pub fn same_version(&self, version: NonZeroU32) -> bool {
-        self.version == version
+    pub fn same_version(&self, version: &NonZeroU32) -> bool {
+        self.version.eq(version)
     }
 
     pub fn update(&mut self, value: T) -> Option<T> {
@@ -141,7 +141,7 @@ impl<T> Slot<T> {
 }
 
 pub trait Key<T> {
-    fn data(&self) -> KeyData<T>;
+    fn data(&self) -> &KeyData<T>;
     fn init(version: NonZeroU32, idx: u32) -> Self;
 
     fn same_version(&self, other: &Self) -> bool {
@@ -157,6 +157,78 @@ pub trait Key<T> {
     }
 }
 
+pub struct AnySlab {
+    slots: Vec<Slot<Box<dyn std::any::Any>>>,
+    free: Vec<u32>,
+    taken: u32,
+}
+
+impl Default for AnySlab {
+    fn default() -> Self {
+        Self {
+            slots: vec![],
+            free: vec![],
+            taken: 0,
+        }
+    }
+}
+
+impl AnySlab {
+    pub fn new() -> Self {
+        Self {
+            slots: vec![],
+            free: vec![],
+            taken: 0,
+        }
+    }
+
+    pub fn insert<'a, T>(&mut self, value: T) -> DefaultKey<T>
+    where
+        T: 'static,
+    {
+        if let Some(free) = self.free.pop() {
+            let slot = &mut self.slots[free as usize];
+            slot.update(Box::new(value));
+            self.taken += 1;
+            DefaultKey::init(slot.version, free)
+        } else {
+            let version = NonZeroU32::new(2).unwrap();
+            let slot = Slot {
+                version,
+                value: Some(Box::new(value) as Box<dyn Any>),
+            };
+            let idx = self.slots.len() as u32;
+            self.slots.push(slot);
+            self.taken += 1;
+            DefaultKey::init(version, idx)
+        }
+    }
+
+    pub fn get<K, T>(&self, key: &K) -> Option<&T>
+    where
+        K: Key<T>,
+        T: 'static,
+    {
+        let slot = self.slots.get(key.index() as usize)?;
+        slot.version
+            .eq(&key.version())
+            .then(|| slot.value.as_ref().unwrap().downcast_ref::<T>())
+            .flatten()
+    }
+
+    pub fn get_mut<K, T>(&mut self, key: &K) -> Option<&mut T>
+    where
+        K: Key<T>,
+        T: 'static,
+    {
+        let slot = self.slots.get_mut(key.index() as usize)?;
+        slot.version
+            .eq(&key.version())
+            .then(|| slot.value.as_mut().unwrap().downcast_mut::<T>())
+            .flatten()
+    }
+}
+
 pub struct Slab<K, V>
 where
     K: Key<V>,
@@ -167,7 +239,7 @@ where
     __phantom: std::marker::PhantomData<K>,
 }
 
-impl<'a, V> Default for Slab<DefaultKey<'a, V>, V> {
+impl<'a, V> Default for Slab<DefaultKey<V>, V> {
     fn default() -> Self {
         Self {
             values: vec![],
@@ -227,7 +299,7 @@ impl<'a, K, V> Key<V> for AccessKey<'a, K, V>
 where
     K: Key<V> + Clone,
 {
-    fn data(&self) -> KeyData<V> {
+    fn data(&self) -> &KeyData<V> {
         self.key.data()
     }
 
@@ -307,7 +379,7 @@ impl<K: Key<V> + Clone, V> Slab<K, V> {
 
     pub fn remove(&mut self, key: K) -> Option<V> {
         let slot = &mut self.values[key.index() as usize];
-        slot.same_version(key.version())
+        slot.same_version(&key.version())
             .then(|| {
                 let value = slot.value.take();
                 self.free.push(key.index());
@@ -320,14 +392,14 @@ impl<K: Key<V> + Clone, V> Slab<K, V> {
 
     pub fn get(&self, key: K) -> Option<&V> {
         let slot = &self.values[key.index() as usize];
-        slot.same_version(key.version())
+        slot.same_version(&key.version())
             .then(|| slot.value.as_ref())
             .flatten()
     }
 
     pub fn get_mut(&mut self, key: K) -> Option<&mut V> {
         let slot = &mut self.values[key.index() as usize];
-        slot.same_version(key.version())
+        slot.same_version(&key.version())
             .then(|| slot.value.as_mut())
             .flatten()
     }
@@ -478,9 +550,9 @@ impl<K: Key<N>, V, N> AssociatedData<K, V, N> {
         let slot = &mut self.items[index];
         if slot.vacant() {
             self.taken += 1;
-        } else if slot.same_version(data.version) {
+        } else if slot.same_version(&data.version) {
             return slot.swap(value);
-        } else if slot.newer_than(data.version) {
+        } else if slot.newer_than(&data.version) {
             // Don't replace newer versions
             return None;
         }
@@ -496,7 +568,7 @@ impl<K: Key<N>, V, N> AssociatedData<K, V, N> {
             return None;
         }
         let slot = &mut self.items[index];
-        if slot.occupied() && slot.same_version(data.version) {
+        if slot.occupied() && slot.same_version(&data.version) {
             self.taken -= 1;
             return slot.vacate();
         }
@@ -510,7 +582,7 @@ impl<K: Key<N>, V, N> AssociatedData<K, V, N> {
             return None;
         }
         let slot = &self.items[index];
-        if slot.occupied() && slot.same_version(data.version) {
+        if slot.occupied() && slot.same_version(&data.version) {
             return slot.value.as_ref();
         }
         None
@@ -523,7 +595,7 @@ impl<K: Key<N>, V, N> AssociatedData<K, V, N> {
             return None;
         }
         let slot = &mut self.items[index];
-        if slot.occupied() && slot.same_version(data.version) {
+        if slot.occupied() && slot.same_version(&data.version) {
             return slot.value.as_mut();
         }
         None
@@ -592,7 +664,33 @@ impl<K: Key<N>, V, N> AssociatedData<K, V, N> {
 
 #[cfg(test)]
 mod tests {
+    use std::eprintln;
+
     use super::*;
+
+    #[test]
+    fn any() {
+        let mut map = AnySlab::new();
+        let mut keys = vec![];
+        let mut keys2 = vec![];
+        (0..10).for_each(|i| {
+            let k = map.insert(i);
+            keys.push(k);
+        });
+        (0..10).for_each(|i| {
+            let k = map.insert(format!("test {}", i));
+            keys2.push(k);
+        });
+        for (i, k) in keys.iter().enumerate() {
+            assert_eq!(map.get(k), Some(&i));
+        }
+        for k in keys2.iter() {
+            let v = map.get(k);
+            eprintln!("{v:?}");
+            assert!(v.is_some(), "{v:?}");
+        }
+        assert!(false)
+    }
 
     #[test]
     fn associated() {
@@ -608,7 +706,7 @@ mod tests {
         });
         assert_eq!(associated.len(), 5, "{associated:?}");
         assert_eq!(associated.get(keys[0]), Some(&1), "{associated:?}");
-        assert!(false, "\n{associated:#?}\n{map:#?}")
+        // assert!(false, "\n{associated:#?}\n{map:#?}")
     }
 
     #[test]

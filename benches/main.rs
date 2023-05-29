@@ -1,14 +1,22 @@
 use bencher::{benchmark_group, benchmark_main, Bencher};
-use tmpkey::Slab;
+use tmpkey::{AnySlab, Slab};
 
 benchmark_group!(primary, insert, insert_and_get, insert_and_remove);
+benchmark_group!(any_slab, any_insert);
 benchmark_group!(
     comparison,
     slotmap_insert,
     slotmap_insert_and_get,
     slotmap_insert_and_remove
 );
-benchmark_main!(primary, comparison);
+benchmark_main!(any_slab, primary, comparison);
+
+fn any_insert(b: &mut Bencher) {
+    let mut map = AnySlab::default();
+    b.iter(|| {
+        map.insert(5);
+    });
+}
 
 fn insert(b: &mut Bencher) {
     let mut map = Slab::default();
